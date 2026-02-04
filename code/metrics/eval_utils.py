@@ -48,7 +48,7 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
 def calculate_variance(activations):
     return np.sum(np.var(activations, axis=0))
 
-def calcuate_sid(gt, pred, type='exp'):
+def calcuate_sid(gt, pred, type='exp', pose_dim=6):
     # gt: list of [seq_len, dim]
     # pred: list of [seq_len, dim]
     if type == 'exp':
@@ -57,17 +57,17 @@ def calcuate_sid(gt, pred, type='exp'):
         k = 20
     merge_gt = np.concatenate(gt, axis=0)
     if type == 'exp':
-        merge_gt = merge_gt[:, 6:]
+        merge_gt = merge_gt[:, pose_dim:]
     else:
-        merge_gt = merge_gt[:, :6]
+        merge_gt = merge_gt[:, :pose_dim]
     # run kmeans on gt
     kmeans_gt = KMeans(n_clusters=k, random_state=0, n_init='auto').fit(merge_gt)
     # run kmeans on pred
     merge_pred = np.concatenate(pred, axis=0)
     if type == 'exp':
-        merge_pred = merge_pred[:, 6:]
+        merge_pred = merge_pred[:, pose_dim:]
     else:
-        merge_pred = merge_pred[:, :6]
+        merge_pred = merge_pred[:, :pose_dim]
     kmeans_pred = kmeans_gt.predict(merge_pred)
     # compute histogram
     hist_cnt = [0] * k

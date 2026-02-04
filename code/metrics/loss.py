@@ -12,10 +12,10 @@ def calc_vq_loss(pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
 
 def calc_vq_loss_AV(pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
     """ function that computes the various components of the VQ loss """
-    # audio dim: 768, visual dim: 56
-    # pred: [pred_v, pred_a]
-    pred_v, pred_a = pred[:, :, :56], pred[:, :, 56:]
-    target_v, target_a = target[:, :, :56], target[:, :, 56:]
+    audio_dim = 768
+    visual_dim = pred.shape[2] - audio_dim
+    pred_v, pred_a = pred[:, :, :visual_dim], pred[:, :, visual_dim:]
+    target_v, target_a = target[:, :, :visual_dim], target[:, :, visual_dim:]
     rec_loss = nn.L1Loss()(pred_v, target_v) + nn.L1Loss()(pred_a, target_a)
     ## loss is VQ reconstruction + weighted pre-computed quantization loss
     quant_loss = quant_loss.mean()

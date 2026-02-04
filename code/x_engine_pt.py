@@ -26,8 +26,10 @@ def train_epoch(model, loader, optimizer, device, scheduler=None, clip=0.0, prin
         # listener_ids = listener_ids.to(device)
         src = src.to(device)
         tgt = tgt.to(device)
-        # split feature_dim of src into 56 and 768
-        src_s_v, src_s_a = torch.split(src, [56, 768], dim=2)
+        # split feature_dim of src into visual and audio
+        audio_dim = 768
+        visual_dim = src.shape[2] - audio_dim
+        src_s_v, src_s_a = torch.split(src, [visual_dim, audio_dim], dim=2)
         mask = torch.zeros((src.shape[0], src.shape[1]), dtype=torch.bool).to(device)
         for j in range(src.shape[0]):
             mask[j, :src_len[j]] = True
@@ -151,7 +153,9 @@ def evaluate_epoch(model, loader, device):
             listener_ids = listener_ids.to(device)
             src = src.to(device)
             tgt = tgt.to(device)
-            src_s_v, src_s_a = torch.split(src, [56, 768], dim=2)
+            audio_dim = 768
+            visual_dim = src.shape[2] - audio_dim
+            src_s_v, src_s_a = torch.split(src, [visual_dim, audio_dim], dim=2)
             mask = torch.zeros((src.shape[0], src.shape[1]), dtype=torch.bool).to(device)
             for j in range(src.shape[0]):
                 mask[j, :src_len[j]] = True
@@ -210,7 +214,9 @@ def evaluate_finetune_epoch(model, loader, device):
             # listener_ids = listener_ids.to(device)
             src = src.to(device)
             tgt = tgt.to(device)
-            src_s_v, src_s_a = torch.split(src, [56, 768], dim=2)
+            audio_dim = 768
+            visual_dim = src.shape[2] - audio_dim
+            src_s_v, src_s_a = torch.split(src, [visual_dim, audio_dim], dim=2)
             mask = torch.zeros((src.shape[0], src.shape[1]), dtype=torch.bool).to(device)
             for j in range(src.shape[0]):
                 mask[j, :src_len[j]] = True
@@ -243,7 +249,9 @@ def evaluate_test_epoch(model, loader, device):
             # listener_ids = listener_ids.to(device)
             src = src.to(device)
             tgt = tgt.to(device)
-            src_s_v, src_s_a = torch.split(src, [56, 768], dim=2)
+            audio_dim = 768
+            visual_dim = src.shape[2] - audio_dim
+            src_s_v, src_s_a = torch.split(src, [visual_dim, audio_dim], dim=2)
             mask = torch.zeros((src.shape[0], src.shape[1]), dtype=torch.bool).to(device)
             for j in range(src.shape[0]):
                 mask[j, :src_len[j]] = True

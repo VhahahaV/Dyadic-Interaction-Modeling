@@ -4,23 +4,38 @@ import argparse
 import os
 import pickle
 
+def _infer_dims(sample):
+    dim = sample.shape[1] if sample.ndim == 2 else sample.shape[-1]
+    if dim == 51:
+        pose_dim, exp_dim = 1, 50
+    elif dim == 56:
+        pose_dim, exp_dim = 6, 50
+    elif dim > 50:
+        exp_dim = 50
+        pose_dim = dim - exp_dim
+    else:
+        pose_dim, exp_dim = 0, dim
+    return pose_dim, exp_dim
+
 def print_metrics(y_true, y_pred, x):
     gt = y_true
     pred = y_pred
+    pose_dim, exp_dim = _infer_dims(gt[0])
+    pose_label = "jaw" if pose_dim == 1 else "pose"
 
     fids = []
     for i in range(len(gt)):
-        mu1, sigma1 = calculate_activation_statistics(gt[i][:, 0:6])
-        mu2, sigma2 = calculate_activation_statistics(pred[i][:, 0:6])
+        mu1, sigma1 = calculate_activation_statistics(gt[i][:, :pose_dim])
+        mu2, sigma2 = calculate_activation_statistics(pred[i][:, :pose_dim])
         fid = calculate_frechet_distance(mu1, sigma1, mu2, sigma2)
         fids.append(fid)
-    print('fid_pose: ', np.mean(fids))
+    print(f'fid_{pose_label}: ', np.mean(fids))
     fid_pose = np.mean(fids)
 
     fids = []
     for i in range(len(gt)):
-        mu1, sigma1 = calculate_activation_statistics(gt[i][:, 6:])
-        mu2, sigma2 = calculate_activation_statistics(pred[i][:, 6:])
+        mu1, sigma1 = calculate_activation_statistics(gt[i][:, pose_dim:])
+        mu2, sigma2 = calculate_activation_statistics(pred[i][:, pose_dim:])
         fid = calculate_frechet_distance(mu1, sigma1, mu2, sigma2)
         fids.append(fid)
     print('fid_exp: ', np.mean(fids))
@@ -28,68 +43,69 @@ def print_metrics(y_true, y_pred, x):
 
     pfids = []
     for i in range(len(gt)):
-        gt_mu2, gt_cov2  = calculate_activation_statistics(np.concatenate([x[i][:,0:6], gt[i][:,0:6]], axis=-1))
-        mu2, cov2 = calculate_activation_statistics(np.concatenate([x[i][:,0:6], pred[i][:,0:6]], axis=-1))
+        gt_mu2, gt_cov2  = calculate_activation_statistics(np.concatenate([x[i][:,:pose_dim], gt[i][:,:pose_dim]], axis=-1))
+        mu2, cov2 = calculate_activation_statistics(np.concatenate([x[i][:,:pose_dim], pred[i][:,:pose_dim]], axis=-1))
         fid2 = calculate_frechet_distance(gt_mu2, gt_cov2, mu2, cov2)
         pfids.append(fid2)
-    print('pfid_pose: ', np.mean(pfids))
+    print(f'pfid_{pose_label}: ', np.mean(pfids))
 
     pfids = []
     for i in range(len(gt)):
-        gt_mu2, gt_cov2  = calculate_activation_statistics(np.concatenate([x[i][:,6:], gt[i][:,6:]], axis=-1))
-        mu2, cov2 = calculate_activation_statistics(np.concatenate([x[i][:,6:], pred[i][:,6:]], axis=-1))
+        gt_mu2, gt_cov2  = calculate_activation_statistics(np.concatenate([x[i][:,pose_dim:], gt[i][:,pose_dim:]], axis=-1))
+        mu2, cov2 = calculate_activation_statistics(np.concatenate([x[i][:,pose_dim:], pred[i][:,pose_dim:]], axis=-1))
         fid2 = calculate_frechet_distance(gt_mu2, gt_cov2, mu2, cov2)
         pfids.append(fid2)
     print('pfid_exp: ', np.mean(pfids))
 
     total_l2 = []
     for i in range(len(gt)):
-        mse = np.mean((gt[i][:, 0:6] - pred[i][:, 0:6])**2)
+        mse = np.mean((gt[i][:, :pose_dim] - pred[i][:, :pose_dim])**2)
         total_l2.append(mse)
-    print('mse_pose: ', np.mean(total_l2))
+    print(f'mse_{pose_label}: ', np.mean(total_l2))
 
     total_l2 = []
     for i in range(len(gt)):
-        mse = np.mean((gt[i][:, 6:] - pred[i][:, 6:])**2)
+        mse = np.mean((gt[i][:, pose_dim:] - pred[i][:, pose_dim:])**2)
         total_l2.append(mse)
     print('mse_exp: ', np.mean(total_l2))
 
-    sid_pose = calcuate_sid(gt, pred, type='pose')
-    sid_pose_gt = calcuate_sid(gt, gt, type='pose')
-    print('sid_pose: ', sid_pose, sid_pose_gt)
+    sid_pose = calcuate_sid(gt, pred, type='pose', pose_dim=pose_dim)
+    sid_pose_gt = calcuate_sid(gt, gt, type='pose', pose_dim=pose_dim)
+    print(f'sid_{pose_label}: ', sid_pose, sid_pose_gt)
 
-    sid_exp = calcuate_sid(gt, pred, type='exp')
-    sid_exp_gt = calcuate_sid(gt, gt, type='exp')
+    sid_exp = calcuate_sid(gt, pred, type='exp', pose_dim=pose_dim)
+    sid_exp_gt = calcuate_sid(gt, gt, type='exp', pose_dim=pose_dim)
     print('sid_exp: ', sid_exp, sid_exp_gt)
 
     gt = np.concatenate(gt, axis=0)
-    gt = gt.reshape(-1, 56)
+    gt = gt.reshape(-1, pose_dim + exp_dim)
     pred = np.concatenate(pred, axis=0)
-    pred = pred.reshape(-1, 56)
-    print('var_pose: ', np.var(gt[:, 0:6].reshape(-1, )), np.var(pred[:, 0:6].reshape(-1, )))
-    print('var_exp: ', np.var(gt[:, 6:].reshape(-1, )), np.var(pred[:, 6:].reshape(-1, )))
+    pred = pred.reshape(-1, pose_dim + exp_dim)
+    print(f'var_{pose_label}: ', np.var(gt[:, :pose_dim].reshape(-1, )), np.var(pred[:, :pose_dim].reshape(-1, )))
+    print('var_exp: ', np.var(gt[:, pose_dim:].reshape(-1, )), np.var(pred[:, pose_dim:].reshape(-1, )))
 
     x = np.concatenate(x, axis=0)
-    x = x[:, 0:56]
-    pcc_xy_pose = np.corrcoef(gt[:, 0:6].reshape(-1, ), x[:, 0:6].reshape(-1, ))[0, 1]
-    pcc_xy_exp = np.corrcoef(gt[:, 6:].reshape(-1, ), x[:, 6:].reshape(-1, ))[0, 1]
-    pcc_xypred_pose = np.corrcoef(pred[:, 0:6].reshape(-1, ), x[:, 0:6].reshape(-1, ))[0, 1]
-    pcc_xypred_exp = np.corrcoef(pred[:, 6:].reshape(-1, ), x[:, 6:].reshape(-1, ))[0, 1]
+    x = x[:, :pose_dim + exp_dim]
+    pcc_xy_pose = np.corrcoef(gt[:, :pose_dim].reshape(-1, ), x[:, :pose_dim].reshape(-1, ))[0, 1]
+    pcc_xy_exp = np.corrcoef(gt[:, pose_dim:].reshape(-1, ), x[:, pose_dim:].reshape(-1, ))[0, 1]
+    pcc_xypred_pose = np.corrcoef(pred[:, :pose_dim].reshape(-1, ), x[:, :pose_dim].reshape(-1, ))[0, 1]
+    pcc_xypred_exp = np.corrcoef(pred[:, pose_dim:].reshape(-1, ), x[:, pose_dim:].reshape(-1, ))[0, 1]
     # print('pcc pose: ', pcc_xy_pose, pcc_xypred_pose)
     # print('pcc exp: ', pcc_xy_exp, pcc_xypred_exp)
-    print('rpcc pose: ', abs(pcc_xy_pose-pcc_xypred_pose))
+    print(f'rpcc {pose_label}: ', abs(pcc_xy_pose-pcc_xypred_pose))
     print('rpcc exp: ', abs(pcc_xy_exp-pcc_xypred_exp))
 
 
-    sts_pose = sts(gt[:, 0:6], pred[:, 0:6])
-    sts_exp = sts(gt[:, 6:], pred[:, 6:])
-    print('sts pose: ', sts_pose)
+    sts_pose = sts(gt[:, :pose_dim], pred[:, :pose_dim])
+    sts_exp = sts(gt[:, pose_dim:], pred[:, pose_dim:])
+    print(f'sts {pose_label}: ', sts_pose)
     print('sts exp: ', sts_exp)
     return fid_pose, fid_exp
 
 def print_metrics_full(y_true, y_pred, x):
     gt = y_true
     pred = y_pred
+    pose_dim, exp_dim = _infer_dims(gt[0])
 
     fids = []
     for i in range(len(gt)):
@@ -114,9 +130,9 @@ def print_metrics_full(y_true, y_pred, x):
     print('mse: ', np.mean(total_l2))
 
     gt = np.concatenate(gt, axis=0)
-    gt = gt.reshape(-1, 56)
+    gt = gt.reshape(-1, pose_dim + exp_dim)
     pred = np.concatenate(pred, axis=0)
-    pred = pred.reshape(-1, 56)
+    pred = pred.reshape(-1, pose_dim + exp_dim)
     print('var: ', np.var(gt.reshape(-1, )), np.var(pred.reshape(-1, )))
 
 def print_biwi_metrics(y_true, y_pred, file_names):

@@ -10,6 +10,27 @@ from models import get_model
 from x_transformers import TransformerWrapper, ContinuousTransformerWrapper, Encoder, Decoder, AutoregressiveWrapper, ContinuousAutoregressiveWrapper
 from x_utils import *
 
+
+def infer_motion_dims(cfg):
+    exp_dim = getattr(cfg, "exp_dim", None)
+    pose_dim = getattr(cfg, "pose_dim", None)
+    if exp_dim is None and pose_dim is None:
+        if hasattr(cfg, "in_dim"):
+            if cfg.in_dim == 51:
+                pose_dim, exp_dim = 1, 50
+            elif cfg.in_dim == 56:
+                pose_dim, exp_dim = 6, 50
+            else:
+                pose_dim, exp_dim = 0, cfg.in_dim
+        else:
+            pose_dim, exp_dim = 0, 0
+    elif exp_dim is None:
+        exp_dim = cfg.in_dim - pose_dim
+    elif pose_dim is None:
+        pose_dim = cfg.in_dim - exp_dim
+    motion_dim = pose_dim + exp_dim
+    return pose_dim, exp_dim, motion_dim
+
 class Transformer(nn.Module):
     def __init__(
         self,
@@ -70,18 +91,18 @@ class Transformer(nn.Module):
         
 
 class SLM(nn.Module):
-    def __init__(self):
+    def __init__(self, config_speaker_pth="./config.yaml", config_listener_pth="./config.yaml"):
         super().__init__()
-        config_speaker_pth = './config.yaml'
-        config_listener_pth = './config.yaml'
-
-        # model_speaker_pth = './runs_vico_pretrain_speaker/model/model.pth.tar'
-        # model_listener_pth = './runs_vico_pretrain_listener/model/model.pth.tar'
-        model_speaker_pth = './runs_speaker_new/_RANK0/model/model.pth.tar'
-        model_listener_pth = './runs/listener_exp/model/model.pth.tar'
 
         config_speaker = config.load_cfg_from_cfg_file(config_speaker_pth)
         config_listener = config.load_cfg_from_cfg_file(config_listener_pth)
+
+        model_speaker_pth = getattr(
+            config_speaker, "speaker_vq_ckpt", "./runs_speaker_new/_RANK0/model/model.pth.tar"
+        )
+        model_listener_pth = getattr(
+            config_listener, "listener_vq_ckpt", "./runs/listener_exp/model/model.pth.tar"
+        )
 
         model_speaker = get_model(config_speaker)
         model_listener = get_model(config_listener)
@@ -111,15 +132,14 @@ class SLM(nn.Module):
             param.requires_grad = False
         for param in self.listener_vq.decoder.parameters():
             param.requires_grad = True
-        
-        
-        dim_in = 56
+        self.pose_dim, self.exp_dim, self.motion_dim = infer_motion_dims(config_listener)
+
+        dim_in = self.motion_dim
         dim = 384
-        enc_max_seq_len = 2048
+        enc_max_seq_len = getattr(config_listener, "max_seq_len", 2048)
         enc_kwargs = {
             'depth': 4,
-            'heads': 12,
-            'max_seq_len': 2048
+            'heads': 12
         }
         dec_kwargs = {
             'depth': 4,
@@ -262,9 +282,18 @@ class SLM(nn.Module):
         mask = mask.reshape(B * (mask.shape[1]))
         pred_flat = pred[mask]
         target_flat = target[mask]
-        pairwise_distance_pose = F.pairwise_distance(pred_flat[:, 0:6], target_flat[:, 0:6])
-        pairwise_distance_exp = F.pairwise_distance(pred_flat[:, 6:], target_flat[:, 6:])
-        loss_cont = torch.mean(pairwise_distance_exp) + torch.mean(pairwise_distance_pose)
+        loss_parts = []
+        if self.pose_dim > 0:
+            pairwise_distance_pose = F.pairwise_distance(
+                pred_flat[:, :self.pose_dim], target_flat[:, :self.pose_dim]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_pose))
+        if self.exp_dim > 0:
+            pairwise_distance_exp = F.pairwise_distance(
+                pred_flat[:, self.pose_dim :], target_flat[:, self.pose_dim :]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_exp))
+        loss_cont = sum(loss_parts) if loss_parts else torch.tensor(0.0, device=pred.device)
         return loss_cont
 
     def forward_contrastive(self, s_rep, l_rep, mask, bidirect_contrast=False):
@@ -323,18 +352,18 @@ class SLM(nn.Module):
         return total_loss, d, None
     
 class SLMFT(nn.Module):
-    def __init__(self):
+    def __init__(self, config_speaker_pth="./config.yaml", config_listener_pth="./config.yaml"):
         super().__init__()
-        config_speaker_pth = './config.yaml'
-        config_listener_pth = './config.yaml'
-
-        # model_speaker_pth = './runs_vico_pretrain_speaker/model/model.pth.tar'
-        # model_listener_pth = './runs_vico_pretrain_listener/model/model.pth.tar'
-        model_speaker_pth = './runs_speaker_new/_RANK0/model/model.pth.tar'
-        model_listener_pth = './runs/listener_exp/model/model.pth.tar'
 
         config_speaker = config.load_cfg_from_cfg_file(config_speaker_pth)
         config_listener = config.load_cfg_from_cfg_file(config_listener_pth)
+
+        model_speaker_pth = getattr(
+            config_speaker, "speaker_vq_ckpt", "./runs_speaker_new/_RANK0/model/model.pth.tar"
+        )
+        model_listener_pth = getattr(
+            config_listener, "listener_vq_ckpt", "./runs/listener_exp/model/model.pth.tar"
+        )
 
         model_speaker = get_model(config_speaker)
         model_listener = get_model(config_listener)
@@ -366,13 +395,14 @@ class SLMFT(nn.Module):
             param.requires_grad = False
         
         
-        dim_in = 56
+        self.pose_dim, self.exp_dim, self.motion_dim = infer_motion_dims(config_listener)
+
+        dim_in = self.motion_dim
         dim = 384
-        enc_max_seq_len = 2048
+        enc_max_seq_len = getattr(config_listener, "max_seq_len", 2048)
         enc_kwargs = {
             'depth': 4,
-            'heads': 12,
-            'max_seq_len': 2048
+            'heads': 12
         }
         dec_kwargs = {
             'depth': 4,
@@ -472,9 +502,18 @@ class SLMFT(nn.Module):
         mask = mask.reshape(B * (mask.shape[1]))
         pred_flat = pred[mask]
         target_flat = target[mask]
-        pairwise_distance_pose = F.pairwise_distance(pred_flat[:, 0:6], target_flat[:, 0:6])
-        pairwise_distance_exp = F.pairwise_distance(pred_flat[:, 6:], target_flat[:, 6:])
-        loss_cont = torch.mean(pairwise_distance_exp) + torch.mean(pairwise_distance_pose)
+        loss_parts = []
+        if self.pose_dim > 0:
+            pairwise_distance_pose = F.pairwise_distance(
+                pred_flat[:, :self.pose_dim], target_flat[:, :self.pose_dim]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_pose))
+        if self.exp_dim > 0:
+            pairwise_distance_exp = F.pairwise_distance(
+                pred_flat[:, self.pose_dim :], target_flat[:, self.pose_dim :]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_exp))
+        loss_cont = sum(loss_parts) if loss_parts else torch.tensor(0.0, device=pred.device)
         return loss_cont
     
     def forward_vq(self, v_speaker, v_listener, mask):
@@ -514,16 +553,18 @@ class SLMFT(nn.Module):
         return total_loss, d, pred_cont_seq_l
 
 class SpeakerSLMFT(nn.Module):
-    def __init__(self):
+    def __init__(self, config_speaker_pth="./config.yaml", config_listener_pth="./config.yaml"):
         super().__init__()
-        config_speaker_pth = './config.yaml'
-        config_listener_pth = './config.yaml'
-
-        model_speaker_pth = './runs_speaker_new/_RANK0/model/model.pth.tar'
-        model_listener_pth = './runs/listener_exp/model/model.pth.tar'
 
         config_speaker = config.load_cfg_from_cfg_file(config_speaker_pth)
         config_listener = config.load_cfg_from_cfg_file(config_listener_pth)
+
+        model_speaker_pth = getattr(
+            config_speaker, "speaker_vq_ckpt", "./runs_speaker_new/_RANK0/model/model.pth.tar"
+        )
+        model_listener_pth = getattr(
+            config_listener, "listener_vq_ckpt", "./runs/listener_exp/model/model.pth.tar"
+        )
 
         model_speaker = get_model(config_speaker)
         model_listener = get_model(config_listener)
@@ -572,13 +613,13 @@ class SpeakerSLMFT(nn.Module):
         for p in self.squasher.parameters():
             p.requires_grad = False
         
-        dim_in = 56
+        self.pose_dim, self.exp_dim, self.motion_dim = infer_motion_dims(config_listener)
+        dim_in = self.motion_dim
         dim = 384
-        enc_max_seq_len = 2048
+        enc_max_seq_len = getattr(config_listener, "max_seq_len", 2048)
         enc_kwargs = {
             'depth': 4,
-            'heads': 12,
-            'max_seq_len': 2048
+            'heads': 12
         }
         dec_kwargs = {
             'depth': 4,
@@ -684,9 +725,18 @@ class SpeakerSLMFT(nn.Module):
         mask = mask.reshape(B * (mask.shape[1]))
         pred_flat = pred[mask]
         target_flat = target[mask]
-        pairwise_distance_pose = F.pairwise_distance(pred_flat[:, 0:6], target_flat[:, 0:6])
-        pairwise_distance_exp = F.pairwise_distance(pred_flat[:, 6:], target_flat[:, 6:])
-        loss_cont = torch.mean(pairwise_distance_exp) + torch.mean(pairwise_distance_pose)
+        loss_parts = []
+        if self.pose_dim > 0:
+            pairwise_distance_pose = F.pairwise_distance(
+                pred_flat[:, :self.pose_dim], target_flat[:, :self.pose_dim]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_pose))
+        if self.exp_dim > 0:
+            pairwise_distance_exp = F.pairwise_distance(
+                pred_flat[:, self.pose_dim :], target_flat[:, self.pose_dim :]
+            )
+            loss_parts.append(torch.mean(pairwise_distance_exp))
+        loss_cont = sum(loss_parts) if loss_parts else torch.tensor(0.0, device=pred.device)
         return loss_cont
     
     def forward_vq(self, v_speaker, v_listener, mask):

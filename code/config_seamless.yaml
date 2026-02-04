@@ -1,0 +1,82 @@
+DATA:
+  dataset: seamless
+  data_root: /home/caizhuoqiang/Data
+  manifest_path: /home/caizhuoqiang/Code/audio_driven_baseline/Dyadic-Interaction-Modeling/data/seamless_processed/manifest.json
+  window_frames: 300
+  fps: 30
+  audio_dim: 768
+  val_ratio: 0.05
+  seed: 42
+  vq_role: speaker
+
+LOSS:
+  quant_loss_weight: 1.0
+
+NETWORK:
+  arch: stage1_BIWI
+  in_dim: 51
+  pose_dim: 1
+  exp_dim: 50
+  hidden_size: 384
+  num_hidden_layers: 6
+  num_attention_heads: 8
+  intermediate_size: 1536
+  quant_factor: 0
+  face_quan_num: 1
+  neg: 0.2
+  INaffine: False
+  speaker_vq_ckpt: runs_vico_pretrain_listener_MAX/model/model.pth.tar
+  listener_vq_ckpt: runs_vico_pretrain_listener_MAX/model/model.pth.tar
+
+VQuantizer:
+  n_embed: 512
+  zquant_dim: 128
+
+TRAIN:
+  use_sgd: False
+  sync_bn: False
+  train_gpu: [0]
+  workers: 4
+  batch_size: 1
+  batch_size_val: 1
+  base_lr: 0.0001
+  StepLR: False
+  warmup_steps: 1
+  adaptive_lr: False
+  factor: 0.3
+  patience: 3
+  threshold: 0.0001
+  poly_lr: False
+  epochs: 40
+  step_size: 40
+  gamma: 0.5
+  start_epoch: 0
+  power: 0.9
+  momentum: 0.9
+  weight_decay: 0.002
+  manual_seed: 131
+  print_freq: 500
+  save_freq: 1
+  save_path:
+  weight:
+  resume:
+  evaluate: True
+  eval_freq: 10
+  pretrain_ckpt: best_model_pretrain.pt
+  finetune_ckpt: best_vico_causal.pt
+  max_seq_len: 8000
+
+Distributed:
+  dist_url: tcp://127.0.0.1:6702
+  dist_backend: 'nccl'
+  multiprocessing_distributed: False
+  world_size: 1
+  rank: 0
+
+TEST:
+  test_workers: 0
+  test_gpu: [0]
+  test_batch_size: 1
+  save: True
+  model_path:
+  save_folder:

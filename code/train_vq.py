@@ -117,11 +117,22 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
 
     # ####################### Data Loader ####################### #
-    from dataset.data_loader import get_candor_listener_dataloaders, get_candor_speaker_dataloaders, get_vico_speaker_dataloaders, get_vico_listener_dataloaders
-    # dataset = get_candor_listener_dataloaders(cfg)
-    # dataset = get_candor_speaker_dataloaders(cfg)
-    # dataset = get_vico_speaker_dataloaders(cfg)
-    dataset = get_vico_listener_dataloaders(cfg)
+    from dataset.data_loader import (
+        get_candor_listener_dataloaders,
+        get_candor_speaker_dataloaders,
+        get_vico_speaker_dataloaders,
+        get_vico_listener_dataloaders,
+    )
+    from dataset.seamless import get_seamless_vq_dataloaders
+
+    dataset_name = str(cfg.dataset).lower() if hasattr(cfg, "dataset") else ""
+    if dataset_name == "seamless":
+        dataset = get_seamless_vq_dataloaders(cfg)
+    else:
+        # dataset = get_candor_listener_dataloaders(cfg)
+        # dataset = get_candor_speaker_dataloaders(cfg)
+        # dataset = get_vico_speaker_dataloaders(cfg)
+        dataset = get_vico_listener_dataloaders(cfg)
     train_loader = dataset['train']
     if cfg.evaluate:
         val_loader = dataset['valid']

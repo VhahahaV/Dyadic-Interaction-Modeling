@@ -1,0 +1,381 @@
+
+我们现在重新定义一个新的任务： 双人对话的任务。
+我会详细提供新的 数据集 ， 和具体 模型设计， 训练设计， loss 设计 等详细 内容
+
+## 数据集
+同时我提供一个新的数据集，你需要对这个数据集的格式做适配：
+数据集的 data_root 为： /home/caizhuoqiang/Data/
+数据集的 json 文件为： dataset_jsons/seamless_mini.json
+
+为现在的数据集的 具体格式 和内容做 dataset 相关的适配
+我现在的数据json 组织结构是：
+{
+  "V00_S0038_I00000307": {
+    "P0059A": {
+      "video_path": "seamless_mini/V00_S0038_I00000307/P0059A/video.mp4",
+      "frame_dir": "seamless_mini/V00_S0038_I00000307/P0059A/frames",
+      "frames_num": 5460,
+      "audio_path": "seamless_mini/V00_S0038_I00000307/P0059A/audio.wav",
+      "valid_frames_num": 5460,
+      "fan_crop_frames_dir": "seamless_mini/V00_S0038_I00000307/P0059A/frames",
+      "pixelai_kp": "seamless_mini/V00_S0038_I00000307/P0059A/features/pixelai_bbox.npy",
+      "flame_coeff_save_path": "seamless_mini/V00_S0038_I00000307/P0059A/features/emica_flame.npz",
+      "speaker_id": [
+        "P0059A"
+      ],
+      "state_path": "seamless_mini/V00_S0038_I00000307/P0059A/state.npy",
+      "motion_feature_path": "",
+      "split": "seamless_mini"
+    },
+    "P0060": {
+      "video_path": "seamless_mini/V00_S0038_I00000307/P0060/video.mp4",
+      "frame_dir": "seamless_mini/V00_S0038_I00000307/P0060/frames",
+      "frames_num": 5460,
+      "audio_path": "seamless_mini/V00_S0038_I00000307/P0060/audio.wav",
+      "valid_frames_num": 5460,
+      "fan_crop_frames_dir": "seamless_mini/V00_S0038_I00000307/P0060/frames",
+      "pixelai_kp": "seamless_mini/V00_S0038_I00000307/P0060/features/pixelai_bbox.npy",
+      "flame_coeff_save_path": "seamless_mini/V00_S0038_I00000307/P0060/features/emica_flame.npz",
+      "speaker_id": [
+        "P0060"
+      ],
+      "state_path": "seamless_mini/V00_S0038_I00000307/P0060/state.npy",
+      "motion_feature_path": "",
+      "split": "seamless_mini"
+    }
+  },
+}
+以上是一个  对话的 所有的数据， 一个对话数据包括两个 partner的 音频， flame 系数， 状态文件等我需要的数据。
+
+
+flame系数文件等详细内容
+参数名称	中文名	Shape	维度含义	作用
+shape_params	形状参数/身份参数	(n_frames, 1, 300)	300 维 PCA 系数	控制人脸静态身份特征（脸型、五官大小等）
+expression_params	表情参数	(n_frames, 1, 100)	100 维 PCA 系数	控制动态表情变化（微笑、皱眉、张嘴等）
+pose_params	姿态参数/全局旋转	(n_frames, 1, 3)	3 维 [rx, ry, rz]	控制neckpose（点头、摇头、转头）
+jaw_params	下颌参数	(n_frames, 1, 3)	3 维（通常仅第 1 维有效）	控制下颌旋转（张嘴、闭嘴）
+cam	相机参数	(n_frames, 1, 3)	3 维 [tx, ty, scale]	控制相机位置和缩放，用于 3D→2D 投影
+
+shape 取第 0帧 的前 100 维 ， exp 取 前 50 维。 jaw_params 还是取 第一维。 对话数据的 pose_params 视为 neck pose，训练与渲染均按 neck_pose 使用。
+
+## 特别注意： 
+数据集存储的帧率 为 30 fps ， 和我们标准处理的 25 不一样， 需要注意相关的配置并且检查代码能否处理 这种情况
+同时 audio 音频的相关指标也和 原来数据集的配置不一样： 这个数据集的相关指标为：
+采样率: 48000 Hz
+声道数: 1 (单声道)
+位深度: 32-bit (floating point)
+编码格式: PCM 32-bit floating point little-endian
+
+## state.npy 
+STATE_IDLE = 0：静默状态
+双方都沉默
+STATE_LISTEN = 1：倾听状态
+自己沉默，对方在说话
+STATE_SPEAK = 2：说话状态
+自己在说话，对方沉默
+STATE_CROSSTALK = 3：同时说话状态
+双方都在说话 
+
+
+不要使用  split 字段， 这个字段没有任何用处
+
+同时 我现在 只要求 关注 表情相关的 51 维度 motion （50 维度 exp + 1 维度 jawpose） ， 暂时不考虑 pose 相关的motion
+
+
+可以，不筛选 listen 段也完全能做，而且**更贴近 DualTalk 把 L2L 放进主表的那种“硬对齐”**：让每个 baseline 自己独立产出**整段序列**，然后统一算指标。你现在的选择等价于：
+
+* DIM 作为 “listener-response” 方法，被迫在包含说话帧的全序列上输出；
+* speaker-only 也被迫在包含 listen 帧的全序列上输出；
+* 这不是不公平，而是任务本身在考验“对话全程建模能力”。
+
+下面我只按你这个决定，给出 **DIM 代码最小修改方案**：不引入 state 过滤，不做拼接策略，只做“能用你 json 数据训练、能对整段推理输出”的适配。
+
+---
+
+## 你要做的 DIM 修改清单
+
+你只需要改三块：
+
+1. 新增一个预处理脚本，把你的 json 变成 DIM 能读的 manifest，并把 FLAME npz 抽成 54 维 motion
+2. 新增一个 Dataset，让训练脚本能从 manifest 取样，并处理 30 fps 与 48k 音频
+3. 在 DIM 的数据集工厂里注册 `seamless`，再改 config 指向你的路径和维度
+
+不需要动模型结构。
+
+---
+
+## 一 新增预处理脚本 seamless_preprocessing.py
+
+目的：生成一个文件 `data/seamless_processed/manifest.json`。里面每条样本是一个“方向固定”的对话：
+
+* speaker = A，listener = B
+* speaker = B，listener = A
+
+注意：你不做 state 过滤，所以样本覆盖整段对话。
+
+预处理时同时把 FLAME 抽成 54 维并保存成 `.npy`，避免每次训练都读 `.npz`。
+
+```python
+# seamless_preprocessing.py
+import json
+from pathlib import Path
+import numpy as np
+
+DATA_ROOT = Path("/home/caizhuoqiang/Data")
+JSON_PATH = DATA_ROOT / "dataset_jsons/seamless_mini.json"
+
+OUT_ROOT = Path("data/seamless_processed")
+OUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+def load_motion54(npz_path: Path) -> np.ndarray:
+    npz = np.load(npz_path)
+    exp = npz["expression_params"][:, 0, :50].astype(np.float32)  # (T,50)
+    jaw = npz["jaw_params"][:, 0, :1].astype(np.float32)          # (T,1)
+    neck = npz["pose_params"][:, 0, :3].astype(np.float32)        # (T,3)
+    return np.concatenate([exp, jaw, neck], axis=-1)              # (T,54)
+
+def abs_path(rel: str) -> Path:
+    return (DATA_ROOT / rel).resolve()
+
+with open(JSON_PATH, "r") as f:
+    meta = json.load(f)
+
+manifest = []
+for dialog_id, partners in meta.items():
+    if len(partners) != 2:
+        continue
+    pids = list(partners.keys())
+    A, B = pids[0], pids[1]
+
+    for speaker_id, listener_id in [(A, B), (B, A)]:
+        sp = partners[speaker_id]
+        ls = partners[listener_id]
+
+        sp_npz = abs_path(sp["flame_coeff_save_path"])
+        ls_npz = abs_path(ls["flame_coeff_save_path"])
+
+        sp_m = load_motion54(sp_npz)
+        ls_m = load_motion54(ls_npz)
+
+        # 对齐长度
+        T = min(
+            sp_m.shape[0],
+            ls_m.shape[0],
+            int(sp.get("valid_frames_num", sp_m.shape[0])),
+            int(ls.get("valid_frames_num", ls_m.shape[0])),
+        )
+        sp_m = sp_m[:T]
+        ls_m = ls_m[:T]
+
+        out_dir = OUT_ROOT / dialog_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        sp_m_path = out_dir / f"{speaker_id}_motion54.npy"
+        ls_m_path = out_dir / f"{listener_id}_motion54.npy"
+        np.save(sp_m_path, sp_m)
+        np.save(ls_m_path, ls_m)
+
+        manifest.append({
+            "dialog_id": dialog_id,
+            "speaker_id": speaker_id,
+            "listener_id": listener_id,
+            "fps": 30,
+            "T": T,
+            "speaker_motion": str(sp_m_path),
+            "listener_motion": str(ls_m_path),
+            "speaker_audio": str(abs_path(sp["audio_path"])),
+            "listener_audio": str(abs_path(ls["audio_path"])),
+        })
+
+out_manifest = OUT_ROOT / "manifest.json"
+with open(out_manifest, "w") as f:
+    json.dump(manifest, f, indent=2)
+
+print("Saved", len(manifest), "samples to", out_manifest)
+```
+
+运行：
+
+```bash
+python seamless_preprocessing.py
+```
+
+---
+
+## 二 新增 Dataset 文件 seamless_dataset.py
+
+目的：对每条 manifest item，随机切一个长度为 `window_frames` 的窗，返回：
+
+* speaker_audio 片段
+* speaker_motion 片段 (L,54)
+* listener_motion 片段 (L,54)
+
+DIM 的实现通常用 HuBERT 或类似 encoder，普遍期待 16k 音频，所以我们统一把 48k 重采样到 16k。
+
+```python
+# 放到 DIM 现有 datasets 目录里，比如 code/datasets/seamless_dataset.py
+import json
+from pathlib import Path
+import numpy as np
+import torch
+import torchaudio
+
+class SeamlessDyadicDataset(torch.utils.data.Dataset):
+    def __init__(self, cfg):
+        self.manifest_path = Path(cfg["manifest_path"])
+        self.window_frames = int(cfg.get("window_frames", 150))  # 30fps: 150帧约5秒
+        self.fps = int(cfg.get("fps", 30))
+        self.audio_sr = int(cfg.get("audio_sr", 16000))
+
+        with open(self.manifest_path, "r") as f:
+            self.items = json.load(f)
+
+        self._resamplers = {}
+
+    def _resample(self, wav: torch.Tensor, sr_in: int) -> torch.Tensor:
+        if sr_in == self.audio_sr:
+            return wav
+        key = (sr_in, self.audio_sr)
+        if key not in self._resamplers:
+            self._resamplers[key] = torchaudio.transforms.Resample(sr_in, self.audio_sr)
+        return self._resamplers[key](wav)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        it = self.items[idx]
+        T = int(it["T"])
+        L = min(self.window_frames, T)
+
+        start = 0 if T <= L else np.random.randint(0, T - L + 1)
+        end = start + L
+
+        sp_motion = np.load(it["speaker_motion"])[start:end]   # (L,54)
+        ls_motion = np.load(it["listener_motion"])[start:end]  # (L,54)
+
+        # 音频按时间切
+        start_sec = start / self.fps
+        end_sec = end / self.fps
+
+        wav, sr_in = torchaudio.load(it["speaker_audio"])      # (C,N), 48k float32 也能读
+        wav = wav.mean(dim=0, keepdim=True)                    # 单声道 (1,N)
+
+        n0 = int(start_sec * sr_in)
+        n1 = int(end_sec * sr_in)
+        n0 = max(0, min(n0, wav.shape[1]))
+        n1 = max(0, min(n1, wav.shape[1]))
+        wav_seg = wav[:, n0:n1]
+
+        wav_seg = self._resample(wav_seg, sr_in).squeeze(0)    # (Ns,)
+        return {
+            "speaker_audio": wav_seg.float(),
+            "speaker_motion": torch.from_numpy(sp_motion).float(),
+            "listener_motion": torch.from_numpy(ls_motion).float(),
+        }
+```
+
+---
+
+## 三 在 DIM 的 dataset factory 注册 seamless
+
+你在 DIM 仓库里搜下面任何一个关键词，一定能找到数据集构建入口：
+
+```bash
+rg -n "build_dataset|get_dataset|dataset_name" .
+```
+
+找到后加一条分支：
+
+```python
+from code.datasets.seamless_dataset import SeamlessDyadicDataset
+
+def build_dataset(cfg):
+    name = cfg["dataset_name"]
+    ...
+    if name == "seamless":
+        return SeamlessDyadicDataset(cfg)
+```
+
+---
+
+## 四 改 config 让训练脚本能跑
+
+你只需要做一份新的配置，比如 `config_seamless.yaml`，核心字段就这些：
+
+```yaml
+dataset_name: seamless
+manifest_path: data/seamless_processed/manifest.json
+
+fps: 30
+audio_sr: 16000
+window_frames: 150
+
+motion_dim: 54
+```
+
+然后把训练入口脚本里原来读 `config.yaml` 的地方换成你的 `config_seamless.yaml`。
+
+你如果发现 DIM 的 config 里不是 `motion_dim` 这个名字，而是 `pose_dim`、`in_dim`、`feat_dim` 之类，做法很简单：
+
+```bash
+rg -n "motion_dim|pose_dim|feat_dim|in_dim" config*.yaml
+rg -n "motion_dim|pose_dim|feat_dim|in_dim" code/ -S
+```
+
+把对应字段改成 54 即可。
+
+---
+
+## 五 推理脚本怎么适配
+
+DIM 的推理脚本一般读取一条样本，然后输出 listener 的预测 motion 序列。
+
+你现在的设定是“整段输出”，所以推理时不要切窗，直接全长跑即可。做法是在推理 dataset 里把 `window_frames` 设成一个超大值，或加一个 `is_train` 参数：
+
+* train 用随机窗
+* test 用整段 `start=0 end=T`
+
+最小改法是加一个 config：
+
+```yaml
+is_train: true
+```
+
+Dataset 里：
+
+```python
+if not cfg.get("is_train", True):
+    start = 0
+    end = T
+```
+
+这样 DIM 会对整段输出一个 (T,54) 的预测，你就能和 DualTalk、你们模型一样，直接跑全序列指标 FD、P-FD、MSE、SID、rPCC。
+
+---
+
+## 六 你坚持“不用 state 过滤”时的一个小建议
+
+你不用 state 过滤没问题，但我建议你保留一个开关，不增加复杂度，只是给自己留后路：
+
+* `use_state_filter: false` 默认关闭
+* 如果哪天 reviewer 说 “DIM 本来是 listener response，你这样训练很亏”，你能一行改成 true 做一个补充实验回应
+
+但按你现在的策略，完全可以不加这个开关，先把 baseline 跑通。
+
+---
+
+## 最终你要跑通的命令顺序
+
+```bash
+python seamless_preprocessing.py
+
+python train_vq.py --config config_seamless.yaml
+python train_s2s_pretrain.py --config config_seamless.yaml
+
+python test_s2s_pretrain.py --config config_seamless.yaml
+```
+
+只要你做到：`test` 输出预测 shape 是 `(T, 54)`，就说明 DIM 已经完全适配你的数据格式和 fps 音频规格了，后续就是训练时长和超参的问题。
+
+如果你把 DIM 本地仓库里 `build_dataset` 那个文件名和 config 里 motion 维度字段名贴一小段出来，我可以把“到底改哪个字段名、在哪个文件注册 seamless”精确落到文件级别，保证你一次改对。

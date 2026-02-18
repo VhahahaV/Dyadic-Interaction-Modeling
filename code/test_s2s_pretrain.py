@@ -81,7 +81,7 @@ def main():
         dataset = get_vico_dataloaders(batch_size=cfg.batch_size)
 
     train_loader = dataset["train"]
-    val_loader = dataset["valid"]
+    val_loader = dataset["test"] if "test" in dataset else dataset["valid"]
 
     y_true, y_pred, x, data_ids = evaluate_test_epoch(model, val_loader, device)
     print_metrics(y_true, y_pred, x)

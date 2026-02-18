@@ -33,6 +33,55 @@ def _build_id_map(items):
     return {sid: idx for idx, sid in enumerate(sorted(ids))}
 
 
+def _load_manifest(path):
+    if not path:
+        return []
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Manifest not found: {p}")
+    with open(p, "r", encoding="utf-8") as f:
+        data_list = json.load(f)
+    if not isinstance(data_list, list):
+        raise ValueError(f"Manifest must be a list: {p}")
+    return data_list
+
+
+def _resolve_split_items(cfg):
+    train_manifest_path = getattr(cfg, "train_manifest_path", None)
+    val_manifest_path = getattr(cfg, "val_manifest_path", None)
+    test_manifest_path = getattr(cfg, "test_manifest_path", None)
+
+    use_split_manifests = any([train_manifest_path, val_manifest_path, test_manifest_path])
+    if use_split_manifests:
+        train_items = _load_manifest(train_manifest_path)
+        val_items = _load_manifest(val_manifest_path)
+        test_items = _load_manifest(test_manifest_path)
+
+        if not train_items:
+            if val_items:
+                train_items = val_items
+            elif test_items:
+                train_items = test_items
+            else:
+                raise ValueError("No data found in split manifests.")
+        if not val_items:
+            val_items = train_items
+        return train_items, val_items, test_items
+
+    manifest_path = getattr(cfg, "manifest_path", None)
+    if manifest_path is None:
+        raise ValueError(
+            "No seamless manifest path configured. Set manifest_path or split manifests."
+        )
+    items = _load_manifest(manifest_path)
+    val_ratio = float(getattr(cfg, "val_ratio", 0.05))
+    seed = int(getattr(cfg, "seed", 42))
+    train_items, val_items = _split_by_dialog(items, val_ratio=val_ratio, seed=seed)
+    if not val_items:
+        val_items = train_items
+    return train_items, val_items, []
+
+
 class SeamlessDyadicDataset(data.Dataset):
     def __init__(self, items, window_frames=150, is_train=True, audio_dim=768, id_map=None):
         self.items = items
@@ -107,18 +156,16 @@ class SeamlessVQDataset(data.Dataset):
 
 
 def get_seamless_dataloaders(cfg):
-    manifest_path = Path(cfg.manifest_path)
-    with open(manifest_path, "r") as f:
-        items = json.load(f)
-
-    val_ratio = float(getattr(cfg, "val_ratio", 0.05))
-    seed = int(getattr(cfg, "seed", 42))
-    train_items, val_items = _split_by_dialog(items, val_ratio=val_ratio, seed=seed)
-
+    train_items, val_items, test_items = _resolve_split_items(cfg)
     window_frames = int(getattr(cfg, "window_frames", 150))
     audio_dim = int(getattr(cfg, "audio_dim", 768))
+    workers = int(getattr(cfg, "workers", 0))
+    batch_size = int(getattr(cfg, "batch_size", 1))
+    batch_size_val = int(getattr(cfg, "batch_size_val", batch_size))
+    batch_size_test = int(getattr(cfg, "batch_size_test", 1))
+    val_random_window = bool(getattr(cfg, "val_random_window", True))
 
-    id_map = _build_id_map(items)
+    id_map = _build_id_map(train_items + val_items + test_items)
 
     train_ds = SeamlessDyadicDataset(
         train_items,
@@ -128,47 +175,63 @@ def get_seamless_dataloaders(cfg):
         id_map=id_map,
     )
     val_ds = SeamlessDyadicDataset(
-        val_items if val_items else train_items,
+        val_items,
         window_frames=window_frames,
-        is_train=True,  # Also use random windows for validation to save memory
+        is_train=val_random_window,
         audio_dim=audio_dim,
         id_map=id_map,
     )
 
     train_loader = data.DataLoader(
         dataset=train_ds,
-        batch_size=cfg.batch_size,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=cfg.workers,
+        num_workers=workers,
         collate_fn=pad_collate,
     )
     val_loader = data.DataLoader(
         dataset=val_ds,
-        batch_size=cfg.batch_size,
+        batch_size=batch_size_val,
         shuffle=False,
-        num_workers=cfg.workers,
+        num_workers=workers,
         collate_fn=pad_collate,
     )
-    return {"train": train_loader, "valid": val_loader}
+    loaders = {"train": train_loader, "valid": val_loader}
+
+    if test_items:
+        test_ds = SeamlessDyadicDataset(
+            test_items,
+            window_frames=window_frames,
+            is_train=False,
+            audio_dim=audio_dim,
+            id_map=id_map,
+        )
+        test_loader = data.DataLoader(
+            dataset=test_ds,
+            batch_size=batch_size_test,
+            shuffle=False,
+            num_workers=workers,
+            collate_fn=pad_collate,
+        )
+        loaders["test"] = test_loader
+
+    return loaders
 
 
 def get_seamless_vq_dataloaders(cfg):
-    manifest_path = Path(cfg.manifest_path)
-    with open(manifest_path, "r") as f:
-        items = json.load(f)
-
-    val_ratio = float(getattr(cfg, "val_ratio", 0.05))
-    seed = int(getattr(cfg, "seed", 42))
-    train_items, val_items = _split_by_dialog(items, val_ratio=val_ratio, seed=seed)
-
+    train_items, val_items, test_items = _resolve_split_items(cfg)
     window_frames = int(getattr(cfg, "window_frames", 150))
     role = getattr(cfg, "vq_role", "listener")
+    workers = int(getattr(cfg, "workers", 0))
+    batch_size = int(getattr(cfg, "batch_size", 1))
+    batch_size_val = int(getattr(cfg, "batch_size_val", 1))
+    batch_size_test = int(getattr(cfg, "batch_size_test", 1))
 
     train_ds = SeamlessVQDataset(
         train_items, role=role, window_frames=window_frames, is_train=True
     )
     val_ds = SeamlessVQDataset(
-        val_items if val_items else train_items,
+        val_items,
         role=role,
         window_frames=window_frames,
         is_train=False,
@@ -176,17 +239,34 @@ def get_seamless_vq_dataloaders(cfg):
 
     train_loader = data.DataLoader(
         dataset=train_ds,
-        batch_size=cfg.batch_size,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=cfg.workers,
+        num_workers=workers,
     )
     val_loader = data.DataLoader(
         dataset=val_ds,
-        batch_size=cfg.batch_size_val if hasattr(cfg, "batch_size_val") else 1,
+        batch_size=batch_size_val,
         shuffle=False,
-        num_workers=cfg.workers,
+        num_workers=workers,
     )
-    return {"train": train_loader, "valid": val_loader}
+    loaders = {"train": train_loader, "valid": val_loader}
+
+    if test_items:
+        test_ds = SeamlessVQDataset(
+            test_items,
+            role=role,
+            window_frames=window_frames,
+            is_train=False,
+        )
+        test_loader = data.DataLoader(
+            dataset=test_ds,
+            batch_size=batch_size_test,
+            shuffle=False,
+            num_workers=workers,
+        )
+        loaders["test"] = test_loader
+
+    return loaders
 
 
 def pad_collate(batch):

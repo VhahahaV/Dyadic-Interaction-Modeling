@@ -57,11 +57,12 @@ def main_worker(gpu, ngpus_per_node, args):
         # dist.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url, world_size=cfg.world_size,
         #                         rank=cfg.rank)
         cfg.rank = int(os.environ["RANK"])
-        cfg.save_path = 'runs_speaker_new_MAX/' + '_RANK' + str(cfg.rank)
+        base_save_path = getattr(cfg, "save_path", "") or "runs_speaker_new_MAX"
+        cfg.save_path = f"{base_save_path}_RANK{cfg.rank}"
         dist.init_process_group(backend=cfg.dist_backend)
         print('Initialized Distributed training with {} GPUs on rank {}'.format(cfg.world_size, int(os.environ["RANK"])))
     else:
-        cfg.save_path = 'runs_vico_pretrain_listener_MAX/'
+        cfg.save_path = getattr(cfg, "save_path", "") or "runs_vico_pretrain_listener_MAX/"
     # ####################### Model ####################### #
     global logger, writer
     logger = get_logger()
